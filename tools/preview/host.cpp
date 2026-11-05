@@ -135,7 +135,7 @@ static void save(const char* path) {
 int main(int argc, char** argv) {
   const char* out = argc > 1 ? argv[1] : ".";
   static WifiAP ap[] = {
-    {"ATT-Home-5G2x", {}, -48, 6, 3}, {"LSU", {}, -55, 1, 5}, {"eduroam", {}, -57, 11, 5}, {"Starbucks WiFi", {}, -63, 6, 0},
+    {"ATT-Home-5G2x", {}, -48, 6, 3}, {"Linksys", {}, -55, 1, 5}, {"TP-Link_88A0", {}, -57, 11, 5}, {"Starbucks WiFi", {}, -63, 6, 0},
     {"", {}, -66, 11, 3}, {"Darkwatch_Pi", {}, -70, 1, 3}, {"NETGEAR47", {}, -74, 3, 3}, {"xfinitywifi", {}, -79, 11, 0},
     {"DIRECT-7B-HP OfficeJet", {}, -83, 6, 3}, {"Café Ünïcode", {}, -88, 9, 3},
   };
