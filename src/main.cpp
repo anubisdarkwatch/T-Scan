@@ -1,0 +1,310 @@
+// T-Scan v1.2 — pocket Wi-Fi / BLE scanner for the LilyGo T-Display (ESP32)
+// Anubis Darkwatch edition. Screens live in ui.h; this file is hardware + scanning.
+// Left button (GPIO0): next page. Hold: screen off / on.
+// Right button (GPIO35): scroll. Hold: pause / resume scanning.
+// Both held ~1 s: rotate 180 (saved). Left/right follow the screen.
+// Serial 115200: CSV log of everything seen.
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <NimBLEDevice.h>
+#include <TFT_eSPI.h>
+#include <Preferences.h>
+
+TFT_eSPI tft;
+TFT_eSprite spr(&tft);
+#include "ui.h"
+
+// ---------- config ----------
+#define BLE_SCAN_S     3        // seconds per BLE scan
+#define WIFI_MS_PER_CH 120      // active scan dwell per channel
+#define BLE_FORGET_MS  60000    // drop BLE devices not heard for this long
+#define FRAME_MS       66       // ~15 fps (sweep animation)
+
+#define BTN_L   0
+#define BTN_R   35
+#define ADC_EN  14
+#define ADC_PIN 34
+
+// ---------- shared state ----------
+static WifiAP aps[MAX_AP];   static int nAp = 0;
+static BleDev ble[MAX_BLE];  static int nBle = 0;
+static uint8_t histW[HIST], histB[HIST]; static int histN = 0;
+static SemaphoreHandle_t mtx;
+static volatile bool paused = false;
+static volatile uint8_t scanState = 0;
+static volatile uint32_t wifiScans = 0, bleScans = 0, bleTotal = 0;
+static NimBLEScan* bscan;
+static Preferences prefs;
+static bool flipped = false;
+
+// ---------- BLE classification ----------
+static int short16(const NimBLEUUID& u) {
+  if (u.bitSize() == 16) return u.getNative()->u16.value;
+  if (u.bitSize() == 32) { uint32_t v = u.getNative()->u32.value; return v <= 0xFFFF ? (int)v : -1; }
+  std::string s = u.toString();
+  if (s.size() == 36 && s.compare(0, 4, "0000") == 0 && s.compare(8, 28, "-0000-1000-8000-00805f9b34fb") == 0)
+    return (int)strtol(s.substr(4, 4).c_str(), nullptr, 16);
+  return -1;
+}
+
+static uint8_t uuidTag(const NimBLEUUID& u) {
+  int v = short16(u);
+  if (v == 0xFEED || v == 0xFEEC) return T_TILE;
+  if (v == 0xFD5A || v == 0xFD59) return T_SMARTTAG;
+  if (v >= 0x3081 && v <= 0x3083) return T_FLIPPER;
+  if (v < 0 && u.toString() == "6ba1b218-15a8-461f-9fa8-5dcae273eafd") return T_MESH;
+  return T_NONE;
+}
+
+static uint8_t classify(NimBLEAdvertisedDevice* d) {
+  for (int i = 0; i < (int)d->getServiceUUIDCount(); i++) { uint8_t t = uuidTag(d->getServiceUUID(i)); if (t) return t; }
+  for (int i = 0; i < (int)d->getServiceDataCount(); i++) { uint8_t t = uuidTag(d->getServiceDataUUID(i)); if (t) return t; }
+  if (d->haveManufacturerData()) {
+    std::string m = d->getManufacturerData();
+    if (m.size() >= 3) {
+      uint16_t cid = (uint8_t)m[0] | ((uint8_t)m[1] << 8);
+      if (cid == 0x004C) {
+        uint8_t ty = (uint8_t)m[2];
+        if (ty == 0x12) return T_FINDMY;
+        if (ty == 0x02) return T_IBEACON;
+        return T_APPLE;
+      }
+      if (cid == 0x0006) return T_MSFT;
+    }
+  }
+  return T_NONE;
+}
+
+static void macStr(const uint8_t* a, char* out) {  // NimBLE stores LSB first
+  sprintf(out, "%02X:%02X:%02X:%02X:%02X:%02X", a[5], a[4], a[3], a[2], a[1], a[0]);
+}
+
+class AdvCB : public NimBLEAdvertisedDeviceCallbacks {
+  void onResult(NimBLEAdvertisedDevice* d) override {
+    const uint8_t* a = d->getAddress().getNative();
+    uint32_t now = millis();
+    uint8_t tag = classify(d);
+    std::string nm = d->getName();
+    bool isNew = false;
+    xSemaphoreTake(mtx, portMAX_DELAY);
+    int idx = -1;
+    for (int i = 0; i < nBle; i++) if (!memcmp(ble[i].addr, a, 6)) { idx = i; break; }
+    if (idx < 0) {
+      if (nBle < MAX_BLE) idx = nBle++;
+      else { idx = 0; for (int i = 1; i < nBle; i++) if (ble[i].last < ble[idx].last) idx = i; }
+      memset(&ble[idx], 0, sizeof(BleDev));
+      memcpy(ble[idx].addr, a, 6);
+      ble[idx].first = now;
+      ble[idx].rnd = d->getAddress().getType() == BLE_ADDR_RANDOM;
+      isNew = true;
+      bleTotal++;
+    }
+    BleDev& b = ble[idx];
+    b.rssi = d->getRSSI();
+    b.last = now;
+    if (tag) b.tag = tag;
+    if (!nm.empty()) strlcpy(b.name, nm.c_str(), sizeof(b.name));
+    BleDev copy = b;
+    xSemaphoreGive(mtx);
+    if (isNew) {
+      char mac[18]; macStr(copy.addr, mac);
+      Serial.printf("B,%lu,%s,%s,\"%s\",%d,%s\n", now, mac, copy.rnd ? "rnd" : "pub", copy.name, copy.rssi, TAGN[copy.tag]);
+    }
+  }
+};
+
+// ---------- scanning task (core 0) ----------
+static void scanTask(void*) {
+  for (;;) {
+    if (paused) { scanState = 0; vTaskDelay(pdMS_TO_TICKS(200)); continue; }
+
+    scanState = 1;
+    int n = WiFi.scanNetworks(false, true, false, WIFI_MS_PER_CH);
+    if (n >= 0) {
+      static WifiAP tmp[MAX_AP];
+      int k = 0;
+      for (int i = 0; i < n && k < MAX_AP; i++) {
+        WifiAP& w = tmp[k++];
+        strlcpy(w.ssid, WiFi.SSID(i).c_str(), sizeof(w.ssid));
+        memcpy(w.bssid, WiFi.BSSID(i), 6);
+        w.rssi = WiFi.RSSI(i); w.ch = WiFi.channel(i); w.auth = WiFi.encryptionType(i);
+      }
+      for (int i = 1; i < k; i++) { WifiAP t = tmp[i]; int j = i - 1; while (j >= 0 && tmp[j].rssi < t.rssi) { tmp[j + 1] = tmp[j]; j--; } tmp[j + 1] = t; }
+      uint32_t now = millis();
+      for (int i = 0; i < k; i++) {
+        const WifiAP& w = tmp[i];
+        Serial.printf("W,%lu,%02X:%02X:%02X:%02X:%02X:%02X,\"%s\",%u,%d,%u\n", now,
+          w.bssid[0], w.bssid[1], w.bssid[2], w.bssid[3], w.bssid[4], w.bssid[5], w.ssid, w.ch, w.rssi, w.auth);
+      }
+      xSemaphoreTake(mtx, portMAX_DELAY);
+      memcpy(aps, tmp, sizeof(WifiAP) * k); nAp = k;
+      xSemaphoreGive(mtx);
+    }
+    WiFi.scanDelete();
+    wifiScans++;
+    if (paused) continue;
+
+    scanState = 2;
+    bscan->start(BLE_SCAN_S, false);
+    bscan->clearResults();
+    uint32_t now = millis();
+    xSemaphoreTake(mtx, portMAX_DELAY);
+    for (int i = 0; i < nBle;) { if (now - ble[i].last > BLE_FORGET_MS) ble[i] = ble[--nBle]; else i++; }
+    // history for the overview sparklines
+    if (histN == HIST) { memmove(histW, histW + 1, HIST - 1); memmove(histB, histB + 1, HIST - 1); histN--; }
+    histW[histN] = nAp > 255 ? 255 : nAp; histB[histN] = nBle > 255 ? 255 : nBle; histN++;
+    xSemaphoreGive(mtx);
+    bleScans++;
+  }
+}
+
+// ---------- UI state ----------
+static int page = P_WIFI;
+static int scrollRow[P_COUNT] = {0};
+static bool screenOn = true;
+static uint32_t alertUntil = 0;
+static int lastTrk = 0;
+static uint32_t slideT0 = 0;            // page slide start
+static bool sliding = false;
+
+static int bleCmp(const void* x, const void* y) {
+  const BleDev* a = (const BleDev*)x; const BleDev* b = (const BleDev*)y;
+  bool ta = isTracker(a->tag), tb = isTracker(b->tag);
+  if (ta != tb) return ta ? -1 : 1;
+  return b->rssi - a->rssi;
+}
+
+static float vbat() { return analogReadMilliVolts(ADC_PIN) * 2 / 1000.0f; }
+
+static void renderFrame() {
+  static WifiAP la[MAX_AP]; static BleDev lb[MAX_BLE]; static uint8_t hw[HIST], hb[HIST];
+  static float vb = 0; static uint32_t vbT = 0;
+  UiData d;
+  xSemaphoreTake(mtx, portMAX_DELAY);
+  d.nAp = nAp;   memcpy(la, aps, sizeof(WifiAP) * nAp);
+  d.nBle = nBle; memcpy(lb, ble, sizeof(BleDev) * nBle);
+  d.histN = histN; memcpy(hw, histW, histN); memcpy(hb, histB, histN);
+  xSemaphoreGive(mtx);
+  qsort(lb, d.nBle, sizeof(BleDev), bleCmp);
+
+  int trk = 0; for (int i = 0; i < d.nBle; i++) if (isTracker(lb[i].tag)) trk++;
+  if (trk > lastTrk) alertUntil = millis() + 1800;
+  lastTrk = trk;
+  if (millis() - vbT > 2000 || vbT == 0) { vb = vbat(); vbT = millis(); }
+
+  int n = page == P_WIFI ? d.nAp : page == P_BLE ? d.nBle : 0;
+  if (scrollRow[page] >= n) scrollRow[page] = 0;
+
+  d.ap = la; d.ble = lb; d.histW = hw; d.histB = hb;
+  d.paused = paused; d.scanState = scanState;
+  d.wifiScans = wifiScans; d.bleScans = bleScans; d.bleTotal = bleTotal;
+  d.vbat = vb; d.now = millis();
+  d.page = page; d.scroll = scrollRow[page];
+  d.alert = millis() < alertUntil;
+  uiRender(d);
+
+  if (sliding) {                         // new page slides in from the right
+    float t = (millis() - slideT0) / 180.0f;
+    if (t >= 1) { sliding = false; spr.pushSprite(0, 0); }
+    else { float e = 1 - (1 - t) * (1 - t) * (1 - t); spr.pushSprite((int)(240 * (1 - e)), 0); }
+  } else spr.pushSprite(0, 0);
+}
+
+// ---------- buttons ----------
+struct Btn { uint8_t pin; bool down; uint32_t t0; bool longFired; };
+static Btn bl = {BTN_L, false, 0, false}, br = {BTN_R, false, 0, false};
+
+static int poll(Btn& b) {   // 0 none, 1 short, 2 long
+  bool d = digitalRead(b.pin) == LOW;
+  uint32_t now = millis();
+  if (d && !b.down) { b.down = true; b.t0 = now; b.longFired = false; }
+  else if (d && b.down && !b.longFired && now - b.t0 > 800) { b.longFired = true; return 2; }
+  else if (!d && b.down) { b.down = false; if (!b.longFired && now - b.t0 > 30) return 1; }
+  return 0;
+}
+
+static bool comboActive = false, comboDone = false;
+static uint32_t comboT0 = 0;
+static bool pollCombo() {   // both held ~1 s: flip 180, saved
+  bool l = digitalRead(BTN_L) == LOW, r = digitalRead(BTN_R) == LOW;
+  if (l && r) {
+    if (!comboActive) { comboActive = true; comboDone = false; comboT0 = millis(); }
+    bl.longFired = br.longFired = true;           // swallow single-button actions
+    if (!comboDone && millis() - comboT0 > 1000) {
+      comboDone = true;
+      flipped = !flipped;
+      prefs.putBool("flip", flipped);
+      tft.setRotation(flipped ? 3 : 1);
+      Serial.printf("# flipped=%d\n", flipped);
+      return true;
+    }
+  } else if (comboActive && !l && !r) comboActive = false;
+  return false;
+}
+
+// ---------- setup / loop ----------
+void setup() {
+  Serial.begin(115200);
+  delay(200);
+  Serial.println("\n# boot: start");
+  pinMode(BTN_L, INPUT_PULLUP);
+  pinMode(BTN_R, INPUT);            // GPIO35 has an external pull-up
+  pinMode(ADC_EN, OUTPUT); digitalWrite(ADC_EN, HIGH);
+  analogSetPinAttenuation(ADC_PIN, ADC_11db);
+
+  prefs.begin("tscan", false);
+  flipped = prefs.getBool("flip", false);
+
+  Serial.println("# boot: display init");
+  tft.init();
+  pinMode(TFT_BL, OUTPUT); digitalWrite(TFT_BL, HIGH);
+  tft.setRotation(flipped ? 3 : 1);
+  tft.fillScreen(TFT_BLACK);
+  spr.setColorDepth(16);
+  if (!spr.createSprite(240, 135)) Serial.println("# boot: SPRITE ALLOC FAILED");
+
+  // CRT power-on (~0.7 s), title card stays up while radios start
+  for (uint32_t t0 = millis(), t = 0; t < 700; t = millis() - t0) { uiSplash(t / 700.0f); spr.pushSprite(0, 0); }
+  uiSplash(1); spr.pushSprite(0, 0);
+  Serial.println("# boot: display OK");
+
+  Serial.printf("# T-Scan %s\n# W,ms,bssid,ssid,ch,rssi,auth\n# B,ms,mac,addr_type,name,rssi,tag\n", FW_VER);
+  Serial.println("# boot: wifi");
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  Serial.println("# boot: ble");
+  NimBLEDevice::init("");
+  bscan = NimBLEDevice::getScan();
+  bscan->setAdvertisedDeviceCallbacks(new AdvCB(), true);
+  bscan->setActiveScan(true);
+  bscan->setInterval(100);
+  bscan->setWindow(80);
+  bscan->setMaxResults(0);
+
+  mtx = xSemaphoreCreateMutex();
+  delay(1400);
+  Serial.println("# boot: scanning");
+  xTaskCreatePinnedToCore(scanTask, "scan", 8192, nullptr, 1, nullptr, 0);
+}
+
+void loop() {
+  bool dirty = pollCombo();
+  int a = poll(bl), b = poll(br);
+  if (comboActive) a = b = 0;
+  int l = flipped ? b : a, r = flipped ? a : b;   // keep "left" on your left
+
+  if (l == 1) {
+    if (!screenOn) { screenOn = true; digitalWrite(TFT_BL, HIGH); }
+    else { page = (page + 1) % P_COUNT; sliding = true; slideT0 = millis(); }
+    dirty = true;
+  }
+  if (l == 2) { screenOn = !screenOn; digitalWrite(TFT_BL, screenOn ? HIGH : LOW); }
+  if (r == 1) { scrollRow[page] += ROWS; dirty = true; }
+  if (r == 2) { paused = !paused; dirty = true; }
+
+  static uint32_t lastDraw = 0;
+  uint32_t frame = sliding ? 16 : FRAME_MS;
+  if (screenOn && (dirty || millis() - lastDraw >= frame)) { renderFrame(); lastDraw = millis(); }
+  delay(5);
+}

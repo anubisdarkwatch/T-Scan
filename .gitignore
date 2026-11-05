@@ -1,0 +1,4 @@
+.pio/
+out/
+tools/preview/host
+*.ppm
