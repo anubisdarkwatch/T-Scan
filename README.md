@@ -60,3 +60,6 @@ look; a few at a venue is normal.
   `@fontsource/noto-sans-egyptian-hieroglyphs`; all OFL).
 - PC previews of every screen: `g++ -std=c++17 -Itools/preview/stub -include cstring
   tools/preview/host.cpp -o host && ./host outdir` (writes PPMs).
+
+## License
+Code: MIT (see `LICENSE`). Fonts: SIL OFL 1.1 (see `FONTS-LICENSE.md`).
