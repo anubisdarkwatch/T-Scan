@@ -9,6 +9,10 @@
 #include <vector>
 #include <string>
 
+#ifndef SCR_W
+#define SCR_W 240
+#define SCR_H 135
+#endif
 #define PROGMEM
 #define pgm_read_byte(p) (*(const uint8_t*)(p))
 enum { TL_DATUM, TC_DATUM, TR_DATUM, ML_DATUM, MC_DATUM, MR_DATUM, BL_DATUM, BC_DATUM, BR_DATUM };
@@ -17,7 +21,7 @@ struct FontMetrics { uint16_t gCount, yAdvance, spaceWidth; int16_t ascent, desc
 
 class TFT_eSprite {
  public:
-  static const int W = 240, H = 135;
+  static const int W = SCR_W, H = SCR_H;
   uint16_t buf[W * H];
   FontMetrics gFont{};
   const uint8_t* f = nullptr;
@@ -115,12 +119,15 @@ class TFT_eSprite {
   }
 };
 
+#ifndef BATT_PCT
+#define BATT_PCT -1
+#endif
 TFT_eSprite spr;
 #include "../../src/ui.h"
 
 static void save(const char* path) {
-  FILE* o = fopen(path, "wb"); fprintf(o, "P6\n240 135\n255\n");
-  for (int i = 0; i < 240 * 135; i++) { uint16_t c = TFT_eSprite::sw(spr.buf[i]);
+  FILE* o = fopen(path, "wb"); fprintf(o, "P6\n%d %d\n255\n", SCR_W, SCR_H);
+  for (int i = 0; i < SCR_W * SCR_H; i++) { uint16_t c = TFT_eSprite::sw(spr.buf[i]);
     uint8_t r = ((c >> 11) & 31) * 255 / 31, g = ((c >> 5) & 63) * 255 / 63, b = (c & 31) * 255 / 31; fputc(r, o); fputc(g, o); fputc(b, o); }
   fclose(o);
 }
@@ -147,7 +154,7 @@ int main(int argc, char** argv) {
   int nBle = sizeof ble / sizeof ble[0];
   uint8_t hw[HIST], hb[HIST];
   for (int i = 0; i < HIST; i++) { hw[i] = 7 + (i * 7 % 5) + i / 10; hb[i] = 4 + (i * 3 % 6) + (i > 25 ? 3 : 0); }
-  UiData d{ap, nAp, ble, nBle, false, 1, 63, 61, 214, hw, hb, HIST, 5.02f, now, 0, 0, false};
+  UiData d{ap, nAp, ble, nBle, false, 1, 63, 61, 214, hw, hb, HIST, 5.02f, BATT_PCT, now, 0, 0, false};
 
   char p[256];
   for (int pg = 0; pg < P_COUNT; pg++) { d.page = pg; d.scanState = pg % 2 ? 2 : 1; uiRender(d); snprintf(p, sizeof p, "%s/page%d.ppm", out, pg); save(p); }

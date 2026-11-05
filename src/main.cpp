@@ -1,8 +1,5 @@
-// T-Scan v1.2 — pocket Wi-Fi / BLE scanner for the LilyGo T-Display (ESP32)
-// Anubis Darkwatch edition. Screens live in ui.h; this file is hardware + scanning.
-// Left button (GPIO0): next page. Hold: screen off / on.
-// Right button (GPIO35): scroll. Hold: pause / resume scanning.
-// Both held ~1 s: rotate 180 (saved). Left/right follow the screen.
+// T-Scan — pocket Wi-Fi / BLE scanner for LilyGo boards with screens.
+// Anubis Darkwatch edition. Screens: ui.h. Board hardware: board.h. This file: scanning + app logic.
 // Serial 115200: CSV log of everything seen.
 
 #include <Arduino.h>
@@ -10,6 +7,7 @@
 #include <NimBLEDevice.h>
 #include <TFT_eSPI.h>
 #include <Preferences.h>
+#include "board.h"
 
 TFT_eSPI tft;
 TFT_eSprite spr(&tft);
@@ -20,11 +18,6 @@ TFT_eSprite spr(&tft);
 #define WIFI_MS_PER_CH 120      // active scan dwell per channel
 #define BLE_FORGET_MS  60000    // drop BLE devices not heard for this long
 #define FRAME_MS       66       // ~15 fps (sweep animation)
-
-#define BTN_L   0
-#define BTN_R   35
-#define ADC_EN  14
-#define ADC_PIN 34
 
 // ---------- shared state ----------
 static WifiAP aps[MAX_AP];   static int nAp = 0;
@@ -162,10 +155,11 @@ static void scanTask(void*) {
 // ---------- UI state ----------
 static int page = P_WIFI;
 static int scrollRow[P_COUNT] = {0};
+static int listLen[P_COUNT] = {0};
 static bool screenOn = true;
 static uint32_t alertUntil = 0;
 static int lastTrk = 0;
-static uint32_t slideT0 = 0;            // page slide start
+static uint32_t slideT0 = 0;
 static bool sliding = false;
 
 static int bleCmp(const void* x, const void* y) {
@@ -175,11 +169,9 @@ static int bleCmp(const void* x, const void* y) {
   return b->rssi - a->rssi;
 }
 
-static float vbat() { return analogReadMilliVolts(ADC_PIN) * 2 / 1000.0f; }
-
 static void renderFrame() {
   static WifiAP la[MAX_AP]; static BleDev lb[MAX_BLE]; static uint8_t hw[HIST], hb[HIST];
-  static float vb = 0; static uint32_t vbT = 0;
+  static float vb = 0; static int pct = -1; static uint32_t vbT = 0;
   UiData d;
   xSemaphoreTake(mtx, portMAX_DELAY);
   d.nAp = nAp;   memcpy(la, aps, sizeof(WifiAP) * nAp);
@@ -191,15 +183,16 @@ static void renderFrame() {
   int trk = 0; for (int i = 0; i < d.nBle; i++) if (isTracker(lb[i].tag)) trk++;
   if (trk > lastTrk) alertUntil = millis() + 1800;
   lastTrk = trk;
-  if (millis() - vbT > 2000 || vbT == 0) { vb = vbat(); vbT = millis(); }
+  if (millis() - vbT > 2000 || vbT == 0) { boardBattery(vb, pct); vbT = millis(); }
 
-  int n = page == P_WIFI ? d.nAp : page == P_BLE ? d.nBle : 0;
-  if (scrollRow[page] >= n) scrollRow[page] = 0;
+  listLen[P_WIFI] = d.nAp; listLen[P_BLE] = d.nBle;
+  int n = listLen[page];
+  if (scrollRow[page] > 0 && scrollRow[page] >= n) scrollRow[page] = 0;
 
   d.ap = la; d.ble = lb; d.histW = hw; d.histB = hb;
   d.paused = paused; d.scanState = scanState;
   d.wifiScans = wifiScans; d.bleScans = bleScans; d.bleTotal = bleTotal;
-  d.vbat = vb; d.now = millis();
+  d.vbat = vb; d.battPct = pct; d.now = millis();
   d.page = page; d.scroll = scrollRow[page];
   d.alert = millis() < alertUntil;
   uiRender(d);
@@ -207,62 +200,30 @@ static void renderFrame() {
   if (sliding) {                         // new page slides in from the right
     float t = (millis() - slideT0) / 180.0f;
     if (t >= 1) { sliding = false; spr.pushSprite(0, 0); }
-    else { float e = 1 - (1 - t) * (1 - t) * (1 - t); spr.pushSprite((int)(240 * (1 - e)), 0); }
+    else { float e = 1 - (1 - t) * (1 - t) * (1 - t); spr.pushSprite((int)(UW * (1 - e)), 0); }
   } else spr.pushSprite(0, 0);
 }
 
-// ---------- buttons ----------
-struct Btn { uint8_t pin; bool down; uint32_t t0; bool longFired; };
-static Btn bl = {BTN_L, false, 0, false}, br = {BTN_R, false, 0, false};
-
-static int poll(Btn& b) {   // 0 none, 1 short, 2 long
-  bool d = digitalRead(b.pin) == LOW;
-  uint32_t now = millis();
-  if (d && !b.down) { b.down = true; b.t0 = now; b.longFired = false; }
-  else if (d && b.down && !b.longFired && now - b.t0 > 800) { b.longFired = true; return 2; }
-  else if (!d && b.down) { b.down = false; if (!b.longFired && now - b.t0 > 30) return 1; }
-  return 0;
-}
-
-static bool comboActive = false, comboDone = false;
-static uint32_t comboT0 = 0;
-static bool pollCombo() {   // both held ~1 s: flip 180, saved
-  bool l = digitalRead(BTN_L) == LOW, r = digitalRead(BTN_R) == LOW;
-  if (l && r) {
-    if (!comboActive) { comboActive = true; comboDone = false; comboT0 = millis(); }
-    bl.longFired = br.longFired = true;           // swallow single-button actions
-    if (!comboDone && millis() - comboT0 > 1000) {
-      comboDone = true;
-      flipped = !flipped;
-      prefs.putBool("flip", flipped);
-      tft.setRotation(flipped ? 3 : 1);
-      Serial.printf("# flipped=%d\n", flipped);
-      return true;
-    }
-  } else if (comboActive && !l && !r) comboActive = false;
-  return false;
-}
+static void setBacklight(bool on) { digitalWrite(TFT_BL, on ? TFT_BACKLIGHT_ON : !TFT_BACKLIGHT_ON); }
 
 // ---------- setup / loop ----------
 void setup() {
   Serial.begin(115200);
   delay(200);
-  Serial.println("\n# boot: start");
-  pinMode(BTN_L, INPUT_PULLUP);
-  pinMode(BTN_R, INPUT);            // GPIO35 has an external pull-up
-  pinMode(ADC_EN, OUTPUT); digitalWrite(ADC_EN, HIGH);
-  analogSetPinAttenuation(ADC_PIN, ADC_11db);
+  Serial.printf("\n# boot: start (%s)\n", BOARD_NAME);
+  boardPreDisplay();
+  boardInit();
 
   prefs.begin("tscan", false);
   flipped = prefs.getBool("flip", false);
 
   Serial.println("# boot: display init");
   tft.init();
-  pinMode(TFT_BL, OUTPUT); digitalWrite(TFT_BL, HIGH);
-  tft.setRotation(flipped ? 3 : 1);
+  pinMode(TFT_BL, OUTPUT); setBacklight(true);
+  tft.setRotation(flipped ? ROT_FLIPPED : ROT_NORMAL);
   tft.fillScreen(TFT_BLACK);
   spr.setColorDepth(16);
-  if (!spr.createSprite(240, 135)) Serial.println("# boot: SPRITE ALLOC FAILED");
+  if (!spr.createSprite(UW, UH)) Serial.println("# boot: SPRITE ALLOC FAILED");
 
   // CRT power-on (~0.7 s), title card stays up while radios start
   for (uint32_t t0 = millis(), t = 0; t < 700; t = millis() - t0) { uiSplash(t / 700.0f); spr.pushSprite(0, 0); }
@@ -289,19 +250,30 @@ void setup() {
 }
 
 void loop() {
-  bool dirty = pollCombo();
-  int a = poll(bl), b = poll(br);
-  if (comboActive) a = b = 0;
-  int l = flipped ? b : a, r = flipped ? a : b;   // keep "left" on your left
-
-  if (l == 1) {
-    if (!screenOn) { screenOn = true; digitalWrite(TFT_BL, HIGH); }
-    else { page = (page + 1) % P_COUNT; sliding = true; slideT0 = millis(); }
-    dirty = true;
+  bool dirty = false;
+  Ev e = boardInput(flipped);
+  int n = listLen[page], maxTop = n > ROWS ? n - ROWS : 0;
+  switch (e) {
+    case EV_NEXT:
+      if (!screenOn) { screenOn = true; setBacklight(true); }
+      else { page = (page + 1) % P_COUNT; sliding = true; slideT0 = millis(); }
+      dirty = true; break;
+    case EV_SCREEN: screenOn = !screenOn; setBacklight(screenOn); break;
+    case EV_PAGEDOWN: scrollRow[page] = scrollRow[page] + ROWS < n ? scrollRow[page] + ROWS : 0; dirty = true; break;
+    case EV_DOWN: if (scrollRow[page] < maxTop) scrollRow[page]++; dirty = true; break;
+    case EV_UP:   if (scrollRow[page] > 0) scrollRow[page]--; dirty = true; break;
+    case EV_PAUSE: paused = !paused; dirty = true; break;
+    case EV_FLIP:
+      flipped = !flipped;
+      prefs.putBool("flip", flipped);
+      tft.setRotation(flipped ? ROT_FLIPPED : ROT_NORMAL);
+      Serial.printf("# flipped=%d\n", flipped);
+      dirty = true; break;
+    default: break;
   }
-  if (l == 2) { screenOn = !screenOn; digitalWrite(TFT_BL, screenOn ? HIGH : LOW); }
-  if (r == 1) { scrollRow[page] += ROWS; dirty = true; }
-  if (r == 2) { paused = !paused; dirty = true; }
+  if (e != EV_NONE && e != EV_SCREEN && !screenOn) { screenOn = true; setBacklight(true); }
+
+  boardLeds(screenOn, paused, scanState, millis() < alertUntil, millis());
 
   static uint32_t lastDraw = 0;
   uint32_t frame = sliding ? 16 : FRAME_MS;
