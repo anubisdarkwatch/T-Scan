@@ -1,4 +1,5 @@
 .pio/
 out/
 tools/preview/host
+tools/preview/host320
 *.ppm
