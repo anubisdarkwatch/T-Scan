@@ -51,7 +51,11 @@ struct UiData {
 #define UI_HINT "L page  R scroll  hold both: flip"
 #endif
 static const int UW = SCR_W, UH = SCR_H;
-static const int ROW_Y = 28, ROW_H = 15, ROWS = (UH - 14 - ROW_Y) / ROW_H;
+static const bool CMP = UH < 100;                   // compact layout for tiny screens (160x80)
+static const int HDR_H = CMP ? 13 : 22;              // header rule y
+static const int ROW_Y = CMP ? 16 : 28, ROW_H = CMP ? 12 : 15;
+static const int ROWS = (UH - (CMP ? 4 : 14) - ROW_Y) / ROW_H;
+static const char* TAGS[] = {"", "FIND", "APPL", "TILE", "STAG", "FLPR", "MESH", "IBCN", "MSFT"};  // compact tag names
 
 // ---------- primitives ----------
 static const uint8_t* curFont = nullptr;
@@ -132,18 +136,23 @@ static void spark(const uint8_t* h, int n, int x, int y, int w, int ht, uint16_t
 
 // ---------- chrome ----------
 static void header(const UiData& d, const char* title, const char* right, uint16_t rc) {
-  icon(JACKAL_S, JACKAL_S_W, JACKAL_S_H, 3, 0, C_AMB);
-  useFont(F_ORB_12); txt(title, 29, 5, C_AMB);
-  useFont(F_STM_11); txt(right, UW - 4, 6, rc, C_BG, TR_DATUM);
-  spr.drawFastHLine(0, 22, UW, d.paused ? C_RED : C_AMB_F);
+  if (CMP) {
+    useFont(F_ORB_12); txt(title, 3, -2, C_AMB);              // caps rows 2..10, baseline 11
+    useFont(F_STM_11); txt(right, UW - 3, 1, rc, C_BG, TR_DATUM);   // same baseline
+  } else {
+    icon(JACKAL_S, JACKAL_S_W, JACKAL_S_H, 3, 0, C_AMB);
+    useFont(F_ORB_12); txt(title, 29, 5, C_AMB);
+    useFont(F_STM_11); txt(right, UW - 4, 6, rc, C_BG, TR_DATUM);
+  }
+  spr.drawFastHLine(0, HDR_H, UW, d.paused ? C_RED : C_AMB_F);
   if (!d.paused && d.scanState) {                          // sweep while scanning
     const int w = 56; int p = (int)((d.now / 5) % (UW + w)) - w;
     uint16_t c = d.scanState == 1 ? C_GRN : C_AMB;
     for (int i = 0; i < w; i++) {
       int x = p + i; if (x < 0 || x >= UW) continue;
       uint8_t a = (uint8_t)(255 * i / w);
-      spr.drawPixel(x, 22, spr.alphaBlend(a, c, C_AMB_F));
-      spr.drawPixel(x, 21, spr.alphaBlend(a / 4, c, C_BG));
+      spr.drawPixel(x, HDR_H, spr.alphaBlend(a, c, C_AMB_F));
+      spr.drawPixel(x, HDR_H - 1, spr.alphaBlend(a / 4, c, C_BG));
     }
   }
 }
@@ -151,9 +160,10 @@ static void header(const UiData& d, const char* title, const char* right, uint16
 static void footer(const UiData& d, const char* right) {
   int x = UW / 2 - (3 * 8 + 14) / 2;
   for (int i = 0; i < P_COUNT; i++) {
-    if (i == d.page) { spr.fillRect(x, UH - 6, 14, 3, C_AMB); x += 18; }
-    else             { spr.fillRect(x, UH - 6, 4, 3, C_AMB_D); x += 8; }
+    if (i == d.page) { spr.fillRect(x, CMP ? UH - 3 : UH - 6, 14, CMP ? 2 : 3, C_AMB); x += 18; }
+    else             { spr.fillRect(x, CMP ? UH - 3 : UH - 6, 4, CMP ? 2 : 3, C_AMB_D); x += 8; }
   }
+  if (CMP) return;                                            // tiny screen: dots only
   useFont(F_STM_11);
   const char* st = d.paused ? "PAUSED" : d.scanState == 1 ? "SCAN WIFI" : d.scanState == 2 ? "SCAN BLE" : "IDLE";
   txt(st, 6, UH - 11, d.paused ? C_RED : C_AMB_D);
@@ -167,7 +177,7 @@ static void listFooter(const UiData& d, int n) {
   footer(d, b);
 }
 
-static void emptyMsg(const char* s) { useFont(F_STM_14); txt(s, UW / 2, UH / 2 - 1, C_AMB_D, C_BG, MC_DATUM); }
+static void emptyMsg(const char* s) { useFont(CMP ? F_STM_11 : F_STM_14); txt(s, UW / 2, UH / 2 - 1, C_AMB_D, C_BG, MC_DATUM); }
 
 // ---------- channel maths ----------
 static void chanScores(const WifiAP* a, int n, int* count, float* score) {
@@ -188,6 +198,18 @@ static void pageWifi(const UiData& d) {
   header(d, "WI-FI", r, open ? C_GRN : C_AMB_D);
   if (!d.nAp) { emptyMsg(d.wifiScans ? "no networks" : "listening..."); footer(d, ""); return; }
   int last = d.scroll + ROWS < d.nAp ? d.scroll + ROWS : d.nAp;
+  if (CMP) {                                                    // name, meter, dBm
+    useFont(F_STM_11);
+    for (int i = d.scroll; i < last; i++) {
+      const WifiAP& w = d.ap[i]; int y = ROW_Y + (i - d.scroll) * ROW_H;
+      bool hidden = !w.ssid[0], isOpen = w.auth == 0;
+      if (isOpen) spr.fillRect(2, y + 2, 2, 8, C_GRN);
+      fitTxt(hidden ? "<hidden>" : w.ssid, 6, y, UW - 56, hidden ? C_AMB_D : (isOpen ? C_GRN : C_AMB));
+      meter(UW - 46, y + 2, 5, w.rssi);
+      char b[8]; snprintf(b, sizeof b, "%d", w.rssi); txt(b, UW - 3, y, sigCol(w.rssi), C_BG, TR_DATUM);
+    }
+    listFooter(d, d.nAp); return;
+  }
   useFont(F_STM_14);                                            // pass 1: names
   for (int i = d.scroll; i < last; i++) {
     const WifiAP& w = d.ap[i]; int y = ROW_Y + (i - d.scroll) * ROW_H;
@@ -210,7 +232,7 @@ static void pageChan(const UiData& d) {
   int best = bestChannel(score);
   char r[20]; if (d.nAp) snprintf(r, sizeof r, "BEST CH %d", best); else strcpy(r, "NO DATA");
   header(d, "SPECTRUM", r, C_GRN);
-  const int base = UH - 29, top = 30, maxH = base - top - 6;
+  const int base = CMP ? UH - 16 : UH - 29, top = CMP ? HDR_H + 6 : 30, maxH = base - top - 6;
   const float step = (UW - 36) / 12.0f;
   auto chX = [step](float c) { return 18 + (int)((c - 1) * step); };   // ch1 .. ch13 across the width
   for (int c = 1; c <= 13; c += 5) for (int y = top; y < base; y += 3) spr.drawPixel(chX(c), y, C_GRID);
@@ -237,14 +259,15 @@ static void pageChan(const UiData& d) {
   for (int c = 1; c <= 13; c++) {
     char b[4]; snprintf(b, sizeof b, "%d", c);
     bool key = c == 1 || c == 6 || c == 11;
-    txt(b, chX(c) + 1, base + 3, (d.nAp && c == best) ? C_GRN : key ? C_AMB : C_AMB_D, C_BG, TC_DATUM);
+    if (CMP && !key) continue;
+    txt(b, chX(c) + 1, base + (CMP ? 1 : 3), (d.nAp && c == best) ? C_GRN : key ? C_AMB : C_AMB_D, C_BG, TC_DATUM);
   }
   // label the three strongest at their peaks, skipping collisions
   int lx[3], ly[3], nl = 0;
-  for (int k = 0; k < d.nAp && k < 3; k++) {
+  for (int k = 0; k < d.nAp && k < (CMP ? 1 : 3); k++) {
     const WifiAP& w = d.ap[k]; if (w.ch < 1 || w.ch > 13 || !w.ssid[0]) continue;
     int h = (w.rssi + 95) * maxH / 60; if (h > maxH) h = maxH;
-    int x = chX(w.ch), y = base - h - 13; if (y < top - 4) y = top - 4;
+    int x = chX(w.ch), y = base - h - (CMP ? 11 : 13); if (y < top - 4) y = top - 4;
     bool clash = false; for (int j = 0; j < nl; j++) if (abs(lx[j] - x) < 60 && abs(ly[j] - y) < 12) clash = true;
     if (clash) continue;
     char b[14]; strlcpy(b, w.ssid, sizeof b);
@@ -260,6 +283,26 @@ static void pageBle(const UiData& d) {
   header(d, "BLE", r, trk ? C_RED : C_AMB_D);
   if (!d.nBle) { emptyMsg(d.bleScans ? "no devices" : "listening..."); footer(d, ""); return; }
   int last = d.scroll + ROWS < d.nBle ? d.scroll + ROWS : d.nBle;
+  if (CMP) {                                                    // name, short tag, dBm
+    useFont(F_STM_11);
+    for (int i = d.scroll; i < last; i++) {
+      const BleDev& b = d.ble[i]; int y = ROW_Y + (i - d.scroll) * ROW_H;
+      bool stale = d.now - b.last > 15000, trk = isTracker(b.tag);
+      int tw = 0;
+      if (b.tag) {
+        uint16_t c = stale ? C_AMB_D : trk ? C_RED : b.tag == T_MESH ? C_GRN : b.tag == T_FLIPPER ? C_AMB : C_GRN_D;
+        tw = spr.textWidth(TAGS[b.tag]) + 4;
+        txt(TAGS[b.tag], UW - 24, y, c, C_BG, TR_DATUM);
+      }
+      char s[8]; snprintf(s, sizeof s, "%d", b.rssi); txt(s, UW - 3, y, stale ? C_AMB_D : sigCol(b.rssi), C_BG, TR_DATUM);
+      char label[24];
+      if (b.name[0]) strlcpy(label, b.name, sizeof label);
+      else snprintf(label, sizeof label, "%02X:%02X:%02X:%02X", b.addr[3], b.addr[2], b.addr[1], b.addr[0]);
+      if (trk && !stale) spr.fillRect(2, y + 2, 2, 8, C_RED);
+      fitTxt(label, 6, y, UW - 30 - tw - 6, stale ? C_AMB_D : trk ? C_RED : b.name[0] ? C_AMB : C_AMB_D);
+    }
+    listFooter(d, d.nBle); return;
+  }
   int tagW[ROWS] = {0};
   useFont(F_STM_11);                                            // pass 1: tags + numbers
   for (int i = d.scroll; i < last; i++) {
@@ -297,19 +340,23 @@ static void pageSum(const UiData& d) {
   else { snprintf(batt, sizeof batt, "BATT %.2fV", d.vbat); low = d.vbat < 3.6f; }
   header(d, "OVERVIEW", batt, low ? C_RED : C_GRN);
 
-  const int cw = (UW - 6) / 3, cx[3] = {10, 10 + cw, 10 + 2 * cw}, ly[2] = {28, 28 + (UH - 38) / 2};
-  const char* lab[6] = {"WI-FI APS", "OPEN", "BEST CH", "BLE NOW", "TRACKERS", "BLE SEEN"};
+  const int cw = (UW - 6) / 3, cx[3] = {CMP ? 5 : 10, (CMP ? 5 : 10) + cw, (CMP ? 5 : 10) + 2 * cw};
+  const int ly[2] = {CMP ? 14 : 28, CMP ? 44 : 28 + (UH - 38) / 2};
+  const char* labFull[6] = {"WI-FI APS", "OPEN", "BEST CH", "BLE NOW", "TRACKERS", "BLE SEEN"};
+  const char* labShort[6] = {"APS", "OPEN", "BEST", "BLE", "TRK", "SEEN"};
+  const char* const* lab = CMP ? labShort : labFull;
   char val[6][10];
   snprintf(val[0], 10, "%d", d.nAp);  snprintf(val[1], 10, "%d", open);
   if (d.nAp) snprintf(val[2], 10, "%d", bestChannel(score)); else strcpy(val[2], "--");
   snprintf(val[3], 10, "%d", d.nBle); snprintf(val[4], 10, "%d", trk);
-  snprintf(val[5], 10, "%lu", (unsigned long)d.bleTotal);
+  snprintf(val[5], 10, "%lu", (unsigned long)(CMP && d.bleTotal > 999 ? 999 : d.bleTotal));
   uint16_t col[6] = {C_AMB, (uint16_t)(open ? C_GRN : C_AMB), C_GRN, C_AMB, (uint16_t)(trk ? C_RED : C_AMB), C_AMB};
 
   useFont(F_STM_11);
   for (int i = 0; i < 6; i++) txt(lab[i], cx[i % 3], ly[i / 3], C_AMB_D);
   useFont(F_ORB_22);
-  for (int i = 0; i < 6; i++) txt(val[i], cx[i % 3], ly[i / 3] + 13, col[i]);
+  for (int i = 0; i < 6; i++) txt(val[i], cx[i % 3], ly[i / 3] + (CMP ? 4 : 13), col[i]);
+  if (CMP) { footer(d, ""); return; }
   for (int c = 1; c < 3; c++) for (int y = 30; y < UH - 17; y += 3) spr.drawPixel(cx[c] - 6, y, C_GRID);
   spr.drawFastHLine(10, ly[1] - 4, UW - 20, C_GRID);
   spark(d.histW, d.histN, 10, ly[0] + 35, cw - 14, 6, C_GRN_D);
@@ -343,7 +390,8 @@ static void uiRender(const UiData& d) {
     case P_BLE:  pageBle(d);  break;
     default:     pageSum(d);  break;
   }
-  brackets(1, 25, UW - 2, UH - 14, 6, C_AMB_D);
+  if (CMP) brackets(0, HDR_H + 2, UW - 1, UH - 5, 4, C_AMB_D);
+  else brackets(1, 25, UW - 2, UH - 14, 6, C_AMB_D);
   if (d.alert && (d.now / 150) % 2) { spr.drawRect(0, 0, UW, UH, C_RED); spr.drawRect(1, 1, UW - 2, UH - 2, C_RED); }
   scanlines();
 }
@@ -352,6 +400,15 @@ static void uiRender(const UiData& d) {
 static void uiSplash(float t) {
   const int ox = (UW - 240) / 2, oy = (UH - 135) / 2, my = UH / 2;
   spr.fillSprite(C_BG);
+  if (CMP) {                                                  // 160x80 title card
+    brackets(1, 1, UW - 2, UH - 2, 6, C_AMB_D);
+    icon(JACKAL_S, JACKAL_S_W, JACKAL_S_H, 8, 10, C_AMB);
+    useFont(F_ORB_22); txt("T-SCAN", 36, 6, C_AMB);
+    useFont(F_STM_11);
+    txt("WI-FI/BLE RECON " FW_VER, 37, 30, C_AMB_D);
+    txt("the watcher in the static", UW / 2, 48, C_GRN, C_BG, TC_DATUM);
+    txt(UI_HINT, UW / 2, 63, C_AMB_D, C_BG, TC_DATUM);
+  } else {
   brackets(3, 3, UW - 4, UH - 4, 10, C_AMB_D);
   icon(JACKAL_L, JACKAL_L_W, JACKAL_L_H, ox + 18, oy + 18, C_AMB);
   useFont(F_ORB_26); txt("T-SCAN", ox + 100, oy + 26, C_AMB);
@@ -361,6 +418,7 @@ static void uiSplash(float t) {
   spr.drawFastHLine(ox + 18, oy + 91, 204, C_AMB_F);
   txt("the watcher in the static", UW / 2, oy + 98, C_GRN, C_BG, TC_DATUM);
   txt(UI_HINT, UW / 2, oy + 114, C_AMB_D, C_BG, TC_DATUM);
+  }
   scanlines();
   if (t < 0.35f) {                                           // beam line grows
     spr.fillSprite(C_BG);

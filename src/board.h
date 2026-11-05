@@ -1,9 +1,10 @@
 // board.h — per-board hardware: screen size, power-up, inputs, battery, LEDs.
-// Select with -DBOARD_TDISPLAY or -DBOARD_TEMBED_CC1101 (see platformio.ini).
+// Select with -DBOARD_TDISPLAY, -DBOARD_TEMBED_CC1101 or -DBOARD_TDONGLE_S3 (see platformio.ini).
 #pragma once
 #include <Arduino.h>
 
-enum Ev : uint8_t { EV_NONE, EV_NEXT, EV_UP, EV_DOWN, EV_PAGEDOWN, EV_PAUSE, EV_SCREEN, EV_FLIP };
+// EV_ADVANCE: scroll the list a screenful, or move to the next page when at the end
+enum Ev : uint8_t { EV_NONE, EV_NEXT, EV_UP, EV_DOWN, EV_PAGEDOWN, EV_ADVANCE, EV_PAUSE, EV_SCREEN, EV_FLIP };
 
 // shared debounced button: returns 0 none, 1 short (on release), 2 long (once, while held)
 struct Btn { uint8_t pin; bool down; uint32_t t0; bool longFired; };
@@ -121,6 +122,72 @@ static void boardLeds(bool on, bool paused, uint8_t scanState, bool alert, uint3
     }
   }
   leds.show();
+}
+
+// =====================================================================
+#elif defined(BOARD_TDONGLE_S3)
+// LilyGo T-Dongle S3 (and S3 Plus) — ESP32-S3, 0.96" ST7735 160x80, one BOOT
+// button, one APA102 RGB LED, USB powered. Pins from LilyGo's T-Dongle-S3 repo.
+#define BOARD_NAME   "T-Dongle S3"
+#define ROT_NORMAL   1
+#define ROT_FLIPPED  3
+#define PIN_BTN      0
+#define PIN_LED_DI   40
+#define PIN_LED_CI   39
+
+static bool btnDown = false;
+static uint32_t btnT0 = 0;
+
+static void apaByte(uint8_t b) {
+  for (int i = 7; i >= 0; i--) { digitalWrite(PIN_LED_DI, (b >> i) & 1); digitalWrite(PIN_LED_CI, 1); digitalWrite(PIN_LED_CI, 0); }
+}
+static void apaSet(uint8_t r, uint8_t g, uint8_t b, uint8_t bright = 6) {   // bright 0..31
+  for (int i = 0; i < 4; i++) apaByte(0x00);                 // start frame
+  apaByte(0xE0 | (bright & 31)); apaByte(b); apaByte(g); apaByte(r);
+  for (int i = 0; i < 4; i++) apaByte(0xFF);                 // end frame
+}
+
+static void boardPreDisplay() {}
+
+static void boardInit() {
+  pinMode(PIN_BTN, INPUT_PULLUP);
+  pinMode(PIN_LED_DI, OUTPUT); pinMode(PIN_LED_CI, OUTPUT);
+  apaSet(0, 0, 0, 0);
+}
+
+static void boardBattery(float& v, int& pct) { v = 5.0f; pct = -1; }   // USB powered
+
+// one button: click = next, hold 1 s = pause, hold 3 s = flip (acts on release)
+static Ev boardInput(bool) {
+  bool d = digitalRead(PIN_BTN) == LOW;
+  uint32_t now = millis();
+  if (d && !btnDown) { btnDown = true; btnT0 = now; }
+  else if (!d && btnDown) {
+    btnDown = false;
+    uint32_t held = now - btnT0;
+    if (held >= 3000) return EV_FLIP;
+    if (held >= 800)  return EV_PAUSE;
+    if (held >= 30)   return EV_ADVANCE;
+  }
+  return EV_NONE;
+}
+
+// LED: amber pulse while scanning Wi-Fi, green on BLE, dim red paused, red flash on tracker;
+// while the button is held it shows what release will do (amber = pause, magenta = flip)
+static void boardLeds(bool, bool paused, uint8_t scanState, bool alert, uint32_t now) {
+  static uint32_t last = 0;
+  if (now - last < 40) return;
+  last = now;
+  if (btnDown) {
+    uint32_t held = now - btnT0;
+    if (held >= 3000) { apaSet(255, 0, 255, 8); return; }
+    if (held >= 800)  { apaSet(255, 176, 0, 8); return; }
+  }
+  if (alert && (now / 150) % 2) { apaSet(255, 20, 20, 12); return; }
+  if (paused) { apaSet(60, 0, 0, 2); return; }
+  if (!scanState) { apaSet(0, 0, 0, 0); return; }
+  uint8_t br = 1 + (uint8_t)(((now / 60) % 20) < 10 ? (now / 60) % 10 : 9 - (now / 60) % 10) / 2;   // gentle pulse
+  if (scanState == 1) apaSet(255, 176, 0, br); else apaSet(57, 255, 20, br);
 }
 
 // =====================================================================

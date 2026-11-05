@@ -259,6 +259,10 @@ void loop() {
       else { page = (page + 1) % P_COUNT; sliding = true; slideT0 = millis(); }
       dirty = true; break;
     case EV_SCREEN: screenOn = !screenOn; setBacklight(screenOn); break;
+    case EV_ADVANCE:                       // one-button boards: page through the list, then next page
+      if (n > ROWS && scrollRow[page] + ROWS < n) scrollRow[page] += ROWS;
+      else { scrollRow[page] = 0; page = (page + 1) % P_COUNT; sliding = true; slideT0 = millis(); }
+      dirty = true; break;
     case EV_PAGEDOWN: scrollRow[page] = scrollRow[page] + ROWS < n ? scrollRow[page] + ROWS : 0; dirty = true; break;
     case EV_DOWN: if (scrollRow[page] < maxTop) scrollRow[page]++; dirty = true; break;
     case EV_UP:   if (scrollRow[page] > 0) scrollRow[page]--; dirty = true; break;

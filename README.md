@@ -8,12 +8,18 @@ and logs only — it never connects to anything.
 |---|---|---|
 | LilyGo TTGO **T-Display** (ESP32) | 1.14" 240×135 | [`firmware/T-Scan-v1.3-tdisplay.bin`](firmware/T-Scan-v1.3-tdisplay.bin) |
 | LilyGo **T-Embed CC1101** (ESP32-S3) | 1.9" 320×170 | [`firmware/T-Scan-v1.3-tembed-cc1101.bin`](firmware/T-Scan-v1.3-tembed-cc1101.bin) |
+| LilyGo **T-Dongle S3** / S3 Plus (ESP32-S3) | 0.96" 160×80 | [`firmware/T-Scan-v1.3-tdongle-s3.bin`](firmware/T-Scan-v1.3-tdongle-s3.bin) |
 
 ![T-Scan on T-Embed CC1101](docs/screens-tembed.png)
 
 <details><summary>T-Display screens</summary>
 
 ![T-Scan on T-Display](docs/screens.png)
+</details>
+
+<details><summary>T-Dongle S3 screens (compact layout)</summary>
+
+![T-Scan on T-Dongle S3](docs/screens-tdongle.png)
 </details>
 
 Brand look: black, amber `#ffb000` + neon green `#39ff14`, Orbitron Black +
@@ -28,6 +34,7 @@ Share Tech Mono, jackal mark, HUD brackets, CRT scanlines, CRT power-on boot.
 If Connect fails, put the board in download mode and try again:
 - **T-Display:** hold the left front button, tap the small reset button on the top edge, release.
 - **T-Embed CC1101:** hold the knob pressed down while plugging in USB (or while tapping reset), release.
+- **T-Dongle S3:** hold the BOOT button while plugging it in, release.
 
 ## Controls
 **T-Display**
@@ -46,7 +53,19 @@ Left/right follow the screen, so after flipping, the left button is still the on
 | Press knob | Next page · hold: screen off / on |
 | Side key | Pause / resume scanning · hold: **rotate 180°** (remembered) |
 
-The LED ring mirrors the scanner: amber comet = Wi-Fi scan, green = BLE scan,
+**T-Dongle S3** (one button)
+| Press | Action |
+|---|---|
+| Click | Next: pages through a long list, then moves to the next screen |
+| Hold ~1 s, release | Pause / resume scanning (LED turns amber while held) |
+| Hold ~3 s, release | **Rotate 180°**, remembered (LED turns magenta while held) |
+
+The dongle's RGB LED pulses amber during Wi-Fi scans and green during BLE,
+glows dim red when paused, and flashes red for a new tracker. Its tiny screen
+uses a compact layout: no header jackal, five rows per list, short tags
+(`FIND`, `TILE`, `STAG`, `FLPR`, `MESH`…), channel labels 1 / 6 / 11 only.
+
+On the T-Embed, the LED ring mirrors the scanner: amber comet = Wi-Fi scan, green = BLE scan,
 one dim red = paused, all red flashing = new tracker. Battery % comes from the
 board's fuel gauge.
 
@@ -76,8 +95,9 @@ look; a few at a venue is normal.
 `B,ms,mac,addr_type,name,rssi,tag` per new BLE address. Boot stages print as `# boot: …`.
 
 ## Build from source
-- PlatformIO: `pio run -e tdisplay` or `pio run -e tembed-cc1101`.
-- Layout: `src/ui.h` draws everything and sizes itself from `SCR_W`/`SCR_H`.
+- PlatformIO: `pio run -e tdisplay`, `-e tembed-cc1101` or `-e tdongle-s3`.
+- Layout: `src/ui.h` draws everything and sizes itself from `SCR_W`/`SCR_H`;
+  screens under 100 px tall get the compact layout.
   `src/board.h` holds each board's power-up, inputs, battery and LEDs.
   `src/main.cpp` is scanning and app logic. Display pins live in `platformio.ini`.
 - Adding a board: a new `[env]` with its display flags + `SCR_W/SCR_H`, and a
