@@ -12,7 +12,7 @@ Share Tech Mono, jackal mark, HUD brackets, CRT scanlines, CRT power-on boot.
 ## Flash it (browser, no installs)
 1. Plug the board into USB-C. Chrome or Edge on desktop.
 2. Open https://espressif.github.io/esptool-js/ → **Connect** → pick the board's COM port.
-3. Flash address **0x0**, file `T-Scan-v1.2-merged.bin` → **Program**.
+3. Download [`firmware/T-Scan-v1.2-merged.bin`](firmware/T-Scan-v1.2-merged.bin), flash address **0x0** → **Program**.
 4. When it finishes, unplug and replug USB (or press the tiny reset button on the
    board's top edge — the two front buttons are not reset).
 
