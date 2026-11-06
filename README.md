@@ -26,6 +26,13 @@ Brand look: black, amber `#ffb000` + neon green `#39ff14`, Orbitron Black +
 Share Tech Mono, jackal mark, HUD brackets, CRT scanlines, CRT power-on boot.
 
 ## Flash it (browser, no installs)
+
+**⚡ One click: [Flash Station](https://anubisdarkwatch.github.io/flash/).** Open it in Chrome or Edge on desktop,
+find your board's card, click **INSTALL** and pick its port. It always has the newest version. When it asks about
+erasing, choose **no** to keep your saved settings.
+
+**Manual, with esptool-js:**
+
 1. Plug the board into USB-C. Chrome or Edge on desktop.
 2. Open https://espressif.github.io/esptool-js/ → **Connect** → pick the board's COM port.
 3. Download the `.bin` for your board from the table above, flash address **0x0** → **Program**.
