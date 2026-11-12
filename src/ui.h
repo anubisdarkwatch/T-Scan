@@ -396,6 +396,40 @@ static void uiRender(const UiData& d) {
   scanlines();
 }
 
+// T-Embed CC1101 power menu; other boards retain their original screens.
+#if defined(BOARD_TEMBED_CC1101)
+static void uiPowerMenu(uint8_t selected, bool confirmOff, const char* notice) {
+  spr.fillSprite(C_BG);
+  brackets(2, 2, UW - 3, UH - 3, 9, C_AMB_D);
+  useFont(F_ORB_22);
+  txt("POWER", 16, 8, C_AMB);
+  spr.drawFastHLine(14, 39, UW - 28, C_AMB_F);
+  useFont(F_STM_14);
+  if (confirmOff) {
+    txt("CONFIRM FULL SHUTDOWN", 17, 52, C_RED);
+    txt("Wake: rear PWR button or USB", 17, 78, C_AMB);
+    txt("Knob: confirm  Side: cancel", 17, 108, C_GRN);
+  } else {
+    static const char* opts[] = {
+      "SLEEP (SIDE KEY WAKES)", "POWER OFF", "ROTATE 180", "BACK"
+    };
+    for (int i = 0; i < 4; i++) {
+      int y = 48 + i * 23;
+      if (i == selected) spr.fillRect(13, y - 2, UW - 26, 20, C_AMB_F);
+      txt(opts[i], 20, y, i == selected ? C_GRN : C_AMB);
+    }
+    useFont(F_STM_11);
+    txt("TURN: SELECT  KNOB: OK  SIDE: BACK", 16, UH - 17, C_AMB_D);
+  }
+  if (notice && !confirmOff) {
+    spr.fillRect(10, UH - 33, UW - 20, 15, C_BG);
+    useFont(F_STM_11);
+    txt(notice, 16, UH - 32, C_RED);
+  }
+  scanlines();
+}
+#endif
+
 // t: 0..1 CRT power-on, then the title card
 static void uiSplash(float t) {
   const int ox = (UW - 240) / 2, oy = (UH - 135) / 2, my = UH / 2;
