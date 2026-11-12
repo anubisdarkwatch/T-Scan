@@ -161,6 +161,11 @@ static uint32_t alertUntil = 0;
 static int lastTrk = 0;
 static uint32_t slideT0 = 0;
 static bool sliding = false;
+#if defined(BOARD_TEMBED_CC1101)
+static bool powerMenu = false, confirmPowerOff = false;
+static uint8_t powerIndex = 0;
+static const char* powerNotice = nullptr;
+#endif
 
 static int bleCmp(const void* x, const void* y) {
   const BleDev* a = (const BleDev*)x; const BleDev* b = (const BleDev*)y;
@@ -195,7 +200,11 @@ static void renderFrame() {
   d.vbat = vb; d.battPct = pct; d.now = millis();
   d.page = page; d.scroll = scrollRow[page];
   d.alert = millis() < alertUntil;
-  uiRender(d);
+#if defined(BOARD_TEMBED_CC1101)
+  if (powerMenu) uiPowerMenu(powerIndex, confirmPowerOff, powerNotice);
+  else
+#endif
+    uiRender(d);
 
   if (sliding) {                         // new page slides in from the right
     float t = (millis() - slideT0) / 180.0f;
@@ -253,6 +262,45 @@ void loop() {
   bool dirty = false;
   Ev e = boardInput(flipped);
   int n = listLen[page], maxTop = n > ROWS ? n - ROWS : 0;
+#if defined(BOARD_TEMBED_CC1101)
+  if (powerMenu) {
+    switch (e) {
+      case EV_DOWN:
+        if (!confirmPowerOff) powerIndex = (powerIndex + 1) % 4;
+        powerNotice = nullptr; dirty = true; break;
+      case EV_UP:
+        if (!confirmPowerOff) powerIndex = (powerIndex + 3) % 4;
+        powerNotice = nullptr; dirty = true; break;
+      case EV_PAUSE: // Side key backs out of confirmation or the menu.
+        if (confirmPowerOff) confirmPowerOff = false;
+        else powerMenu = false;
+        powerNotice = nullptr; dirty = true; break;
+      case EV_NEXT: // Encoder click selects / confirms.
+        dirty = true;
+        if (confirmPowerOff) {
+          int err = boardPowerOff();
+          confirmPowerOff = false;
+          powerNotice = err == 1 ? "POWER CHIP NOT DETECTED" :
+                        err == 2 ? "UNPLUG USB TO POWER OFF" : "SHUTDOWN FAILED";
+        } else if (powerIndex == 0) {
+          paused = true;
+          scanState = 0;
+          setBacklight(false);
+          boardDeepSleep();
+        } else if (powerIndex == 1) {
+          confirmPowerOff = true;
+        } else if (powerIndex == 2) {
+          flipped = !flipped;
+          prefs.putBool("flip", flipped);
+          tft.setRotation(flipped ? ROT_FLIPPED : ROT_NORMAL);
+          Serial.printf("# flipped=%d\n", flipped);
+          powerMenu = false;
+        } else powerMenu = false;
+        break;
+      default: break;
+    }
+  } else
+#endif
   switch (e) {
     case EV_NEXT:
       if (!screenOn) { screenOn = true; setBacklight(true); }
@@ -267,6 +315,12 @@ void loop() {
     case EV_DOWN: if (scrollRow[page] < maxTop) scrollRow[page]++; dirty = true; break;
     case EV_UP:   if (scrollRow[page] > 0) scrollRow[page]--; dirty = true; break;
     case EV_PAUSE: paused = !paused; dirty = true; break;
+#if defined(BOARD_TEMBED_CC1101)
+    case EV_MENU:
+      powerMenu = true; confirmPowerOff = false;
+      powerIndex = 0; powerNotice = nullptr;
+      sliding = false; dirty = true; break;
+#endif
     case EV_FLIP:
       flipped = !flipped;
       prefs.putBool("flip", flipped);
