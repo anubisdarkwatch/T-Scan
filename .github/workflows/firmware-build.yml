@@ -1,0 +1,40 @@
+name: Firmware build
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  platformio:
+    name: PlatformIO ${{ matrix.environment }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [tdisplay, tembed-cc1101, tdongle-s3]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install PlatformIO
+        run: python -m pip install --upgrade platformio
+      - name: Compile firmware
+        run: pio run -e ${{ matrix.environment }}
+
+  preview:
+    name: Desktop UI preview
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile and render each display
+        run: |
+          mkdir -p /tmp/tscan-preview
+          for spec in "240 135" "320 170" "160 80"; do
+            set -- $spec
+            g++ -std=c++17 -O2 -Itools/preview/stub -include cstring \
+              -DSCR_W=$1 -DSCR_H=$2 tools/preview/host.cpp -o /tmp/tscan-preview/host
+            mkdir -p /tmp/tscan-preview/${1}x${2}
+            /tmp/tscan-preview/host /tmp/tscan-preview/${1}x${2}
+          done

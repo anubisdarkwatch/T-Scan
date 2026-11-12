@@ -4,7 +4,7 @@
 #include <Arduino.h>
 
 // EV_ADVANCE: scroll the list a screenful, or move to the next page when at the end
-enum Ev : uint8_t { EV_NONE, EV_NEXT, EV_UP, EV_DOWN, EV_PAGEDOWN, EV_ADVANCE, EV_PAUSE, EV_SCREEN, EV_FLIP };
+enum Ev : uint8_t { EV_NONE, EV_NEXT, EV_UP, EV_DOWN, EV_PAGEDOWN, EV_ADVANCE, EV_PAUSE, EV_SCREEN, EV_FLIP, EV_MENU };
 
 // shared debounced button: returns 0 none, 1 short (on release), 2 long (once, while held)
 struct Btn { uint8_t pin; bool down; uint32_t t0; bool longFired; };
@@ -23,6 +23,9 @@ static int pollBtn(Btn& b, uint32_t longMs = 800) {
 // side key, 8x WS2812, BQ27220 fuel gauge. Pins from LilyGo's utilities.h.
 #include <Wire.h>
 #include <Adafruit_NeoPixel.h>
+#include <esp_sleep.h>
+#define XPOWERS_CHIP_BQ25896
+#include <XPowersLib.h>
 
 #define BOARD_NAME   "T-Embed CC1101"
 #define ROT_NORMAL   3
@@ -97,7 +100,7 @@ static Ev boardInput(bool /*flipped*/) {
   if (k == 1) return EV_NEXT;
   if (k == 2) return EV_SCREEN;
   if (s == 1) return EV_PAUSE;
-  if (s == 2) return EV_FLIP;
+  if (s == 2) return EV_MENU;
   int32_t d = (encRaw - encLast) / 2;          // 2 transitions per detent
   if (d) { encLast += d * 2; return d > 0 ? EV_DOWN : EV_UP; }
   return EV_NONE;
@@ -122,6 +125,30 @@ static void boardLeds(bool on, bool paused, uint8_t scanState, bool alert, uint3
     }
   }
   leds.show();
+}
+
+// Sleep stops scanning and powers down peripherals. The side key (GPIO 6)
+// wakes the ESP32-S3, which boots normally and resumes scanning.
+static void boardDeepSleep() {
+  // Releasing the side key first avoids an immediate wake-up.
+  while (digitalRead(PIN_SIDE_KEY) == LOW) delay(10);
+  delay(100);
+  leds.clear(); leds.show();
+  digitalWrite(PIN_PWR_EN, LOW);
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_6, 0);
+  esp_deep_sleep_start();
+}
+
+// BQ25896 battery power-path shutdown. The accessible side key cannot wake
+// the device afterward: use the recessed PWR/QON button or reconnect USB.
+// Return 1 if the PMIC is unavailable, 2 if USB is attached, 3 if still on.
+static uint8_t boardPowerOff() {
+  XPowersPPM pmu;
+  if (!pmu.init(Wire, I2C_SDA, I2C_SCL, BQ25896_SLAVE_ADDRESS)) return 1;
+  if (pmu.isVbusIn()) return 2;
+  pmu.shutdown();
+  delay(600);
+  return 3;
 }
 
 // =====================================================================
