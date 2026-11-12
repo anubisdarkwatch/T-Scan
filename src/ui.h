@@ -4,7 +4,11 @@
 #pragma once
 #include "brand_fonts.h"
 
+#if defined(BOARD_TEMBED_CC1101)
+#define FW_VER  "v1.3.1"
+#else
 #define FW_VER  "v1.3"
+#endif
 #define MAX_AP  48
 #define MAX_BLE 64
 #define HIST    40
