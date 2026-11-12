@@ -75,7 +75,7 @@ jobs:
           b = p.read_bytes()
           assert b[0] == 0xE9, "Missing ESP bootloader at offset 0x0"
           assert b[0x10000] == 0xE9, "Missing app image at offset 0x10000"
-          assert b[0x8000:0x8002] == b"\\xAA\\x50", "Missing partition table at 0x8000"
+          assert b[0x8000:0x8002] == bytes.fromhex("aa50"), "Missing partition table at 0x8000"
           assert len(b) > 0x10000 + 400_000, "Unexpectedly small firmware image"
           print(f"Verified flash image: {len(b):,} bytes; offsets 0x0/0x8000/0x10000")
           PY
