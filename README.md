@@ -58,7 +58,14 @@ Left/right follow the screen, so after flipping, the left button is still the on
 |---|---|
 | Turn knob | Scroll one row |
 | Press knob | Next page · hold: screen off / on |
-| Side key | Pause / resume scanning · hold: **rotate 180°** (remembered) |
+| Side key | Pause / resume scanning · hold ~1 s: **power menu** |
+| Power menu | Turn knob to select, press knob to confirm; tap side key to go back |
+
+The T-Embed power menu offers **Sleep** (side key wakes and restarts),
+**Power Off** (BQ25896 battery shutdown; only the recessed PWR button or USB
+can restart), and **Rotate 180°** (remembered). Full shutdown is unavailable
+while USB power is connected. **Existing published v1.3 firmware binaries
+do not include this source-code update**; rebuild before flashing.
 
 **T-Dongle S3** (one button)
 | Press | Action |
