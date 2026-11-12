@@ -64,8 +64,19 @@ Left/right follow the screen, so after flipping, the left button is still the on
 The T-Embed power menu offers **Sleep** (side key wakes and restarts),
 **Power Off** (BQ25896 battery shutdown; only the recessed PWR button or USB
 can restart), and **Rotate 180°** (remembered). Full shutdown is unavailable
-while USB power is connected. **Existing published v1.3 firmware binaries
-do not include this source-code update**; rebuild before flashing.
+while USB power is connected. **The prebuilt v1.3 firmware binaries and
+Flash Station do not include this source-code update.**
+
+**Experimental T-Embed power-fix image (v1.3.1):** Open the
+[firmware build workflow](https://github.com/anubisdarkwatch/T-Scan/actions/workflows/firmware-build.yml),
+choose a successful run for the latest `main` commit, and download the
+`T-Scan-TEmbed-CC1101-v1.3.1-powerfix` artifact. Unzip it, verify the
+checksum in `SHA256SUMS.txt`, and flash
+`T-Scan-v1.3.1-tembed-cc1101-powerfix.bin` at **0x0** using esptool-js.
+The image includes bootloader, partitions and application. Do not enable
+full shutdown tests until you can access the recessed **PWR/QON** button
+or USB to restart. **Physical power-off and wake tests are still pending.**
+Do not distribute as a stable release until verified on hardware.
 
 **T-Dongle S3** (one button)
 | Press | Action |
